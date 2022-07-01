@@ -1,0 +1,7 @@
+torch
+pandas
+autogluon
+sagemaker>=2.80
+vowpalwabbit==8.10.1
+setuptools==59.5.0
+openpyxl
