@@ -28,7 +28,7 @@ In this repository we are going to see an example of how to take a sample input,
 
 First, you need to get a [SageMaker Studio Lab](https://studiolab.sagemaker.aws/) account. This is completely free and you don't need an AWS account. Because this new service is still in Preview and AWS is looking to reduce fraud (e.g. crypto mining), you will need to wait 1-3 days for your account to be approved. You can see [this video](https://www.youtube.com/watch?v=FUEIwAsrMP4&ab_channel=machinelearnear) for more information.
 
-Now that you have your Studio Lab account, you can follow the steps shown in `test.ipynb` > [![Open In SageMaker Studio Lab](https://studiolab.sagemaker.aws/studiolab.svg)](https://studiolab.sagemaker.aws/import/github/machinelearnear/multi-label-classification-autogluon/blob/main/test.ipynb)
+Now that you have your Studio Lab account, you can follow the steps shown in `data_prep_train_eval.ipynb` > [![Open In SageMaker Studio Lab](https://studiolab.sagemaker.aws/studiolab.svg)](https://studiolab.sagemaker.aws/import/github/machinelearnear/multi-label-classification-autogluon/blob/main/data_prep_train_eval.ipynb)
 
 Click on `Copy to project` in the top right corner. This will open the Studio Lab web interface and ask you whether you want to clone the entire repo or just the Notebook. Clone the entire repo and click `Yes` when asked about building the `Conda` environment automatically. You will now be running on top of a `Python` environment with `AutoGluon` and other dependencies installed.
 
@@ -67,9 +67,29 @@ for x,y in zip(df_sector['label'].unique(), uniques.values):
 df_sector.to_csv('data/data_sector.csv', index=False)
 ```
 
+Looking at samples in the raw dataset, each grouping (e.g., "Case") can be linked to one or more categories and to one or more subcategories, creating hundreds of variations. As a result, we treat the problem of predicting "Category" and "Subcategory" as a multi-label classification problems where each "Case" can have one or more categories as labels and one or more subcategories.
+ 
+The first step is to transform our dataset and create a label for each one of the categories we have. Next, for each sample we assign a `0` or `1` to each label column depending on whether the "Case" belongs to that category or not.
+
+```python
+# prepare for training
+df_category = df.dropna(subset=['Category'])
+df_category = df_category.drop(['Sector', 'Subcategory', 'Tag'], axis=1)
+ 
+ 
+df_category=df_category.pivot_table(index='Case Details', columns=['Category'], aggfunc=len,fill_value=0)
+ 
+df_category['sentence'] = df_category.index
+df_category.reset_index(drop=True, inplace=True)
+df_category= df_category.rename(columns=str.lower)
+df_category.shape
+```
+ 
+We follow the same approach for subcategories.
+
 ### Model training
 
-#### Approach A: Using `TabularPredictor`
+#### Predict single label using `TabularPredictor`
 - https://auto.gluon.ai/scoredebugweight/api/autogluon.task.html#autogluon.tabular.TabularPredictor
 
 ```python
@@ -100,7 +120,7 @@ leaderboard.head(10)
 | CatBoost            | 0.8415879  | 0.76553106 | 0.10149503     | 0.05197072    | 63.9656713 | 0.10149503              | 0.05197072             | 63.9656713        | 1           | TRUE      | 3         |
 | NeuralNetTorch      | 0.32400756 | 0.28657315 | 0.0297451      | 0.01081109    | 6.67724204 | 0.0297451               | 0.01081109             | 6.67724204        | 1           | TRUE      | 5         |
 
-#### Approach B: Using `TextPredictor`
+#### Predict single label using `TextPredictor`
 - https://auto.gluon.ai/stable/tutorials/tabular_prediction/tabular-multimodal-text-others.html#improve-the-performance-with-stack-ensemble
 - https://auto.gluon.ai/stable/tutorials/text_prediction/customization.html
 
@@ -138,6 +158,93 @@ Once this is finished, you can evaluate against your test data
 
 ```python
 pred_sector_textpred.evaluate(test_data, metrics=["f1", "acc"])
+```
+
+#### Predict `Category` and `Subcategory` (Multi-label Classification)
+With `AutoGluon`, we can have a separate [`TabularPredictor`](https://auto.gluon.ai/stable/api/autogluon.predictor.html#autogluon.tabular.TabularPredictor.fit) for each column we want to predict and use a custom MultilabelPredictor class to manage the collection of TabularPredictor objects. With this in mind, we create a `MultiLabelPredictor` class similar to the one described in the `AutoGluon` documentation here. We then apply our `MultiLabelPredictor` to predict the category and subcategory labels for each Case.
+ 
+First, we split the data into train and test and use the train data for training. Here is an example of how we train the model to predict Categories.
+ 
+```python
+from MultilabelPredictor import MultilabelPredictor
+ 
+labels = [f'{x}' for x in category_train_data.columns]
+labels.remove('sentence')
+save_path='models'
+cat_multi_predictor = MultilabelPredictor(labels=labels, path=save_path)
+cat_multi_predictor.fit(category_train_data)
+```
+
+Once the training is finished, we can see the results for different algorithms. `LightGBM` and  `WeightedEnsemble_L2` have the best performance when predicting "Category" in our case.
+
+```
+Fitting model: CatBoost ...
+         0.9219    = Validation score   (accuracy)
+         22.61s    = Training   runtime
+         0.01s     = Validation runtime
+Fitting model: ExtraTreesGini ...
+         0.8586    = Validation score   (accuracy)
+         1.72s     = Training   runtime
+         0.1s      = Validation runtime
+Fitting model: ExtraTreesEntr ...
+         0.8608    = Validation score   (accuracy)
+         1.44s     = Training   runtime
+         0.1s      = Validation runtime
+Fitting model: XGBoost ...
+         0.9325    = Validation score   (accuracy)
+         2.72s     = Training   runtime
+         0.01s     = Validation runtime
+Fitting model: NeuralNetTorch ...
+         0.9219    = Validation score   (accuracy)
+         2.89s     = Training   runtime
+         0.02s     = Validation runtime
+Fitting model: LightGBMLarge ...
+         0.9198    = Validation score   (accuracy)
+         5.81s     = Training   runtime
+         0.03s     = Validation runtime
+Fitting model: WeightedEnsemble_L2 ...
+         0.9325    = Validation score   (accuracy)
+         0.77s     = Training   runtime
+         0.0s      = Validation runtime
+```
+
+We can also view the leaderboard that shows the performance of each algorithm when predicting a specific column. Here is an example for “XYZ”:
+
+| |model|score_val|pred_time_val|fit_time|pred_time_val_marginal|fit_time_marginal|stack_level|can_infer|
+|:----|:----|:----|:----|:----|:----|:----|:----|:----|
+|0|LightGBM|0.936975|0.04584|2.798952|0.04584|2.798952|1|TRUE|
+|1|WeightedEnsemble_L2|0.936975|0.046272|3.212549|0.000432|0.413597|2|TRUE|
+|2|CatBoost|0.932773|0.010337|4.887029|0.010337|4.887029|1|TRUE|
+|3|XGBoost|0.930672|0.014278|2.400199|0.014278|2.400199|1|TRUE|
+|4|LightGBMXT|0.930672|0.021188|2.24326|0.021188|2.24326|1|TRUE|
+|5|LightGBMLarge|0.930672|0.075606|5.641281|0.075606|5.641281|1|TRUE|
+|6|RandomForestGini|0.918067|0.102849|1.580466|0.102849|1.580466|1|TRUE|
+|7|RandomForestEntr|0.915966|0.102992|1.551508|0.102992|1.551508|1|TRUE|
+|8|KNeighborsDist|0.915966|0.122099|0.05007|0.122099|0.05007|1|TRUE|
+|9|KNeighborsUnif|0.915966|0.122558|0.046638|0.122558|0.046638|1|TRUE|
+|10|NeuralNetFastAI|0.913866|0.015536|2.055213|0.015536|2.055213|1|TRUE|
+|11|NeuralNetTorch|0.913866|0.017212|3.79111|0.017212|3.79111|1|TRUE|
+|12|ExtraTreesEntr|0.913866|0.103084|1.431155|0.103084|1.431155|1|TRUE|
+|13|ExtraTreesGini|0.913866|0.104022|1.44497|0.104022|1.44497|1|TRUE|
+
+Now we are ready to use the `MultiLabelPredictor` to predict all labels in new data, in this case our test data set.
+
+```python
+predictions = cat_multi_predictor.predict(category_test_data_nolab)
+print("Predictions:  \n", predictions)
+ 
+output_cat_df = category_test_data_nolab.copy()
+cat_result = pd.concat([output_cat_df, predictions], axis=1).reindex(output_cat_df.index)
+cat_result.head()
+cat_result.to_csv('data/cat_output.csv',index=False)
+```
+
+We can also easily evaluate the performance of our predictions
+
+```python
+evaluations = cat_multi_predictor.evaluate(category_test_data)
+print(evaluations)
+print("Evaluated using metrics:", cat_multi_predictor.eval_metrics)
 ```
 
 ### Model inference on `validation` data
